@@ -1,0 +1,1346 @@
+ /* ------------------------------------------------------------------- */ 
+//-----------------------Title: CCDC SMA Implementation in Spain :
+//-------------------- Author: Sofia Miguel, based on Chen et al.(2021) 
+/* ------------------------------------------------------------------- */  
+
+// This script is based on Chen et al.(2021). 
+
+var landsat_tiles = ee.FeatureCollection("users/.../delimitacion"),
+    forestType = ee.Image("users/.../tipo_bosque")
+    forestType = forestType.where(forestType.eq(314), 313)
+ /*------------------------- Import functions:  -------------------------*/ 
+
+
+//the original version was from project/GLANCE/ccdcUtilities/ccdc
+
+/** ///////////////////////////////////////////////////////////////////
+  * 
+  * Utility functions for filtering and modifying CCD output
+* 
+  ** /////////////////////////////////////////////////////////////////*/
+  
+  
+  /**
+  * Create sequence of segment strings
+* @param {Integer}    nSegments       Number of segments to create labels for
+* 
+  * @returns {ee.List)                  List of segment names (e.g. S1, S2)
+*/
+  var buildSegmentTag = function(nSegments) {
+    return ee.List.sequence(1, nSegments).map(function(i) {
+      return ee.String('S').cat(ee.Number(i).int())
+    })
+  }
+  
+  
+  /**
+    * create sequence of band names for a given string tag
+  * @param {String}     tag         String tag to use (e.g. 'RMSE')
+  * @param {List}    bandList       List of band names to combine with tag
+  * 
+    * @returns {ee.List)              List of band names combined with tag name
+*/
+  var buildBandTag = function(tag, bandList) {
+    var bands = ee.List(bandList)
+    return bands.map(function(s) {
+      return ee.String(s).cat('_' + tag)
+    })
+  }
+  
+  
+  /**
+    * Extract CCDC magnitude image
+  * 
+    * @param {ee.Image}     fit         Image with CCD results
+  * @param {Integer}      nSegments   Number of segments to extract
+  * @param {bandList}     bandList    Client-side list with band names to use
+  * 
+    * @returns {ee.Image)               Image with magnitude of change per segment per band 
+* 
+  */
+  var buildMagnitude = function(fit, nSegments, bandList) {
+    var segmentTag = buildSegmentTag(nSegments)
+    var magTag = buildBandTag('MAG', bandList)
+    var nBands = bandList.length
+    var zeros = ee.Image(ee.Array([ee.List.repeat(0, nBands)]).repeat(0, nSegments))
+    var magImg =fit.select('magnitude').arrayCat(zeros, 0).float().arraySlice(0, 0, nSegments)
+    return magImg.arrayFlatten([segmentTag, magTag])
+  }
+  
+  var newBuildMagnitude = function(fit, nSegments, bandList){
+    var segmentTag = buildSegmentTag(nSegments)
+    var zeros = ee.Image(ee.Array(ee.List.repeat(0, nSegments)))
+    // Pad zeroes for pixels that have less than 6 segments and then slice the first 6 values
+    var retrieveMags = function(band){
+      var magImg = fit.select(band + '_magnitude').arrayCat(zeros, 0).float().arraySlice(0, 0, nSegments)
+      var tags = segmentTag.map(function(x){ return ee.String(x).cat('_').cat(band).cat('_MAG')})
+      return magImg.arrayFlatten([tags])
+    }
+    return ee.Image(bandList.map(retrieveMags))
+  }
+  
+  
+  
+  /**
+    * Extract CCDC RMSE image
+  * 
+    * @param {ee.Image}     fit         Image with CCDC results
+  * @param {Integer}      nSegments   Number of segments to extract
+  * @param {bandList}     bandList    Client-side list with band names to use
+  * 
+    * @returns {ee.Image)               Image with RMSE of each segment per band
+*/
+  var buildRMSE = function(fit, nSegments, bandList) {
+    var segmentTag = buildSegmentTag(nSegments)
+    var magTag = buildBandTag('RMSE', bandList)  
+    var nBands = bandList.length
+    var zeros = ee.Image(ee.Array([ee.List.repeat(0, nBands)]).repeat(0, nSegments))
+    var magImg = fit.select('rmse').arrayCat(zeros, 0).float().arraySlice(0, 0, nSegments)
+    
+    return magImg.arrayFlatten([segmentTag, magTag])
+  }
+  
+  var newBuildRMSE = function(fit, nSegments, bandList){
+    var segmentTag = buildSegmentTag(nSegments)
+    var zeros = ee.Image(ee.Array(ee.List.repeat(0, nSegments)))
+    // Pad zeroes for pixels that have less than 6 segments and then slice the first 6 values
+    var retrieveMags = function(band){
+      var magImg = fit.select(band + '_rmse').arrayCat(zeros, 0).float().arraySlice(0, 0, nSegments)
+      var tags = segmentTag.map(function(x){ return ee.String(x).cat('_').cat(band).cat('_RMSE')})
+      return magImg.arrayFlatten([tags])
+    }
+    return ee.Image(bandList.map(retrieveMags))
+  }
+  
+  
+  /**
+    * Extract CCDC Coefficients 
+  * @param {ee.Image}     fit         Image with CCD results
+  * @param {Integer}      nSegments   Number of segments to extract
+  * @param {bandList}     bandList    Client-side list with band names to use
+  * 
+    * @returns {ee.Image)               Image with coefficients per band
+* 
+  */
+  var buildCoefs = function(fit, nSegments, bandList) {
+    var nBands = bandList.length
+    var segmentTag = buildSegmentTag(nSegments)
+    var magTag = buildBandTag('coef', bandList)
+    var harmonicTag = ['INTP','SLP','COS','SIN','COS2','SIN2','COS3','SIN3']
+    
+    var zeros = ee.Array([ee.Array([ee.List.repeat(0, harmonicTag.length)]).repeat(0, nBands).toList()])
+    var magImg = fit.select('coefs').arrayCat(zeros.repeat(0, nSegments), 0).float().arraySlice(0, 0, nSegments)
+    
+    return magImg.arrayFlatten([segmentTag, magTag, harmonicTag])
+  }
+  
+  var newBuildCoefs = function(fit, nSegments, bandList) {
+    var nBands = bandList.length
+    var segmentTag = buildSegmentTag(nSegments)
+    var bandTag = buildBandTag('coef', bandList)
+    var harmonicTag = ['INTP','SLP','COS','SIN','COS2','SIN2','COS3','SIN3']
+    
+    var zeros = ee.Image(ee.Array([ee.List.repeat(0, harmonicTag.length)])).arrayRepeat(0, nSegments)
+    var retrieveCoefs = function(band){
+      var coefImg = fit.select(band + '_coefs').arrayCat(zeros, 0).float().arraySlice(0, 0, nSegments)
+      var tags = segmentTag.map(function(x){ return ee.String(x).cat('_').cat(band).cat('_coef')})
+      return coefImg.arrayFlatten([tags, harmonicTag])
+    }
+    return ee.Image(bandList.map(retrieveCoefs))
+  }
+  
+  var newBuildCoefs_gradual = function(fit, nSegments, bandList) {
+    var nBands = bandList.length
+    var segmentTag = buildSegmentTag(nSegments)
+    var bandTag = buildBandTag('coef', bandList)
+    var harmonicTag = ['INTP','SLP','COS','SIN','COS2','SIN2','COS3','SIN3']
+    
+    var zeros = ee.Image(ee.Array([ee.List.repeat(0, harmonicTag.length)])).arrayRepeat(0, nSegments)
+    var retrieveCoefs = function(band){
+      var coefImg = fit.select(band + '_coefs').arrayCat(zeros, 0).float().arraySlice(0, 0, nSegments)
+      var tags = segmentTag.map(function(x){ return ee.String(x).cat('_').cat(band).cat('_coef')})
+      return coefImg.arrayFlatten([tags, harmonicTag])
+    }
+    return ee.Image(bandList.map(retrieveCoefs)).select('.*_SLP')
+    .addBands(ee.Image(bandList.map(retrieveCoefs)).select('.*INTP'))
+  }
+  
+  
+  
+  /**
+    * Extract CCDC tStart, tEnd, tBreak, changeProb
+  * 
+    * @param {ee.Image}     fit         Image with CCD results
+  * @param {Integer}      nSegments   Number of segments to extract
+  * @param {String}       tag         Client-side string to use as name in the output bands
+  * 
+    * @returns {ee.Image)               Image with values for tStart, tEnd, tBreak or changeProb
+*/
+  var buildStartEndBreakProb = function(fit, nSegments, tag) {
+    var segmentTag = buildSegmentTag(nSegments).map(function(s) {
+      return ee.String(s).cat('_'+tag)
+    })
+    
+    var zeros = ee.Array(0).repeat(0, nSegments)
+    
+    var magImg = fit.select(tag).arrayCat(zeros, 0).float().arraySlice(0, 0, nSegments)
+    
+    return magImg.arrayFlatten([segmentTag])
+  }
+  
+  /**
+    * build a 74 x nSegments CCDC image
+  * using int32 as output.
+  * 
+    * @param {ee.Image}     fit         Image with CCD results
+  * @param {Integer}      nSegments   Number of segments to extract
+  * @param {bandList}     bandList    Client-side list with band names to use
+  * 
+    * @returns {ee.Image)               Image with all results from CCD in 'long' image format
+*/
+  var buildCcdcImage = function(fit, nSegments, bandList) {
+    var magnitude = buildMagnitude(fit, nSegments, bandList);
+    var rmse = buildRMSE(fit, nSegments, bandList);
+    
+    var coef = buildCoefs(fit, nSegments, bandList);
+    var tStart = buildStartEndBreakProb(fit, nSegments, 'tStart');
+    var tEnd = buildStartEndBreakProb(fit, nSegments, 'tEnd');
+    var tBreak = buildStartEndBreakProb(fit, nSegments, 'tBreak');
+    var probs = buildStartEndBreakProb(fit, nSegments, 'changeProb');
+    return ee.Image.cat(coef, rmse, magnitude, tStart, tEnd, tBreak, probs);
+  }
+  
+  var newBuildCcdcImage = function(fit, nSegments, bandList) {
+    var magnitude = newBuildMagnitude(fit, nSegments, bandList);
+    var rmse = newBuildRMSE(fit, nSegments, bandList);
+    var numObs = buildStartEndBreakProb(fit, nSegments, 'numObs'); //Shijuan added this because commission test requires it.
+    var coef = newBuildCoefs(fit, nSegments, bandList);
+    var tStart = buildStartEndBreakProb(fit, nSegments, 'tStart');
+    var tEnd = buildStartEndBreakProb(fit, nSegments, 'tEnd');
+    var tBreak = buildStartEndBreakProb(fit, nSegments, 'tBreak');
+    var probs = buildStartEndBreakProb(fit, nSegments, 'changeProb');
+    return ee.Image.cat(coef, numObs, rmse, magnitude, tStart, tEnd, tBreak, probs);
+  }
+  
+  //this function extract the features that I need for gradual degradation
+  var newBuildCcdcImage_gradual = function(fit, nSegments, bandList) {
+    var rmse = newBuildRMSE(fit, nSegments, bandList)
+    var slope = newBuildCoefs_gradual(fit, nSegments, bandList)
+    var numObs = buildStartEndBreakProb(fit, nSegments, 'numObs')
+    var tStart = buildStartEndBreakProb(fit, nSegments, 'tStart')
+    var tEnd = buildStartEndBreakProb(fit, nSegments, 'tEnd')
+    return ee.Image.cat(slope, rmse, tStart, tEnd, numObs)
+  }
+  
+  //let's use this function for extract feature related to gradual and abrupt degradation 
+var newBuildCcdcImage_deg = function(fit, nSegments, bandList) {
+  var magnitude = newBuildMagnitude(fit, nSegments, bandList)
+  var rmse = newBuildRMSE(fit, nSegments, bandList)
+  var slope = newBuildCoefs_gradual(fit, nSegments, bandList)
+  var numObs = buildStartEndBreakProb(fit, nSegments, 'numObs')
+  var tStart = buildStartEndBreakProb(fit, nSegments, 'tStart')
+  var tBreak = buildStartEndBreakProb(fit, nSegments, 'tBreak')
+  var tEnd = buildStartEndBreakProb(fit, nSegments, 'tEnd')
+  var probs = buildStartEndBreakProb(fit, nSegments, 'changeProb');
+  return ee.Image.cat(magnitude, slope, rmse, tStart, tBreak, tEnd, numObs, probs);
+}
+
+/**
+* Get ccdc coefficients for specified date (v2)
+* @param {ee.Image}     image       Image with CCD results in long multi-band format
+* @param {Number}       date        Date to extract the segments for, in the format that ccd was run in
+* 
+* @returns {ee.Image)               Image with ccd coefficients for given date
+*/
+var getSegmentParamsForYear = function(image, date) {
+  var timeT = date // ee.Date.fromYMD(year, month, day).millis()
+  
+  var start = image.select('.*tStart') //segment start data
+  var end = image.select('.*tEnd')    //segment end date
+  
+  var n = start.bandNames().length() //number of segments
+  
+  var cfarray = ee.List.sequence(1, n).map(function(i) {
+    var cf = image.select(ee.String('S').cat(ee.Number(i).byte()).cat('.*coef.*'))
+    var rmse = image.select(ee.String('S').cat(ee.Number(i).byte()).cat('.*RMSE'))
+    return cf.addBands(rmse).float().toArray()
+  })
+  
+  cfarray = ee.ImageCollection(cfarray).toArrayPerBand(1).arrayTranspose()
+  
+  var vic = start.toArray().lte(timeT).and(end.toArray().gt(timeT)).toArray(1)
+  // var vic = start.toArray().lte(timeT).and(start.toArray().gt(0)).toArray(1)
+
+  var coefNames = image.select('S1.*coef.*', 'S1.*RMSE').bandNames()
+
+  return cfarray.arrayMask(vic).arraySlice(0, -1).arrayProject([1]).arrayFlatten([coefNames])
+}
+
+/**
+* THIS FUNCTION HASN'T BEEN USED OR TESTED
+  * get ccdc coefficients for specified segment
+  * v3: extract coef and rmse
+  */
+    var getSegmentParams_v3 = function(image, idx) {
+      var coefNames = image.select('S1.*coef.*', 'S1.*RMSE').bandNames()
+      
+      var scoef = image.select('S' + idx + '.*coef.*', 'S' + idx + '.*RMSE').rename(coefNames)
+      
+      return scoef
+    }
+  
+  
+  /**
+    * create synthetic image for specified band
+  * @param {ee.Image}     image       Image with CCD results in long multi-band format
+  * @param {Number}       date        Date to extract the segments for, in the format that ccd was run in
+  * @param {String}       band        Band name to use for creation of synthetic image
+  * 
+    * @returns {ee.Image)               Synthetic image for the given date and band
+*/
+  var getSyntheticForYear = function(image, date, band) {
+    var tfit = date 
+    var omega = 2.0 * Math.PI / 365.25
+    var imageT = ee.Image.constant([1, tfit,
+                                    tfit.multiply(omega).cos(),
+                                    tfit.multiply(omega).sin(),
+                                    tfit.multiply(omega * 2).cos(),
+                                    tfit.multiply(omega * 2).sin(),
+                                    tfit.multiply(omega * 3).cos(),
+                                    tfit.multiply(omega * 3).sin()]).float()
+    
+    // Casting as ee string allows using this function to be mapped
+    var selectString = ee.String('.*' + band + '_coef.*')
+    var params = getSegmentParamsForYear(image, date) 
+    .select(selectString)
+    
+    
+    return imageT.multiply(params).reduce('sum').rename(band)
+    
+  }
+  
+  /**
+    * Create synthetic image for a list of bands
+  * @param {ee.Image}     image       Image with CCD results in long multi-band format
+  * @param {Number}       date        Date to extract the segments for, in the format that ccd was run in
+  * @param {List}         band        List of bands to get synthetic data for
+  * 
+    * @returns {ee.Image)               Synthethic image for the given date and bands
+*/
+  var getMultiSynthetic = function(image, date, bandList){
+    var retrieveSynthetic = function(band){
+      return getSyntheticForYear(image, date, band)
+    }
+    return ee.Image.cat(bandList.map(retrieveSynthetic))
+  }
+  
+  
+  /**
+    * Replace nodata in CCD output and fill with zeros
+  * @param {ee.Image}     fit         Image with CCD results
+  * @param {Integer}      nCoefs      Number of coefficients present in the results
+  * @param {Integer}      nBands      Number of spectral bands used to produce the results
+  * @param {ee.Geometry}  clipGeom    Geometry of the image that is being masked
+  * 
+    * @returns {ee.Image)               Image with nodata areas replaced with zeros
+*/
+  var fillNoData = function(fit, nCoefs, nBands, clipGeom){
+    var d1 = ee.Image(ee.Array([0])).double()
+    var d2 = ee.Image(ee.Array([ee.List.repeat(0, nBands)])).double() 
+    var d3 = ee.Image(ee.Array([ee.Array([ee.List.repeat(0, nCoefs)]).repeat(0, nBands).toList()])).double()
+    // TODO: Check if updating mask instead of clipping also works.
+    var mock = ee.Image([d1, d1, d1, d3, d2, d1, d1.int32(), d2]).rename(fit.bandNames()).clip(clipGeom)
+    var newimage = ee.ImageCollection([mock, fit]).mosaic()
+    return newimage
+    
+  }
+  
+  /**
+    // this one has two bugs, with  email to Paulo
+  var newFillNoData = function(fit, nCoefs, nBands){
+    var d1 = ee.Image(ee.Array([0]).double())
+    var d2 = ee.Image(ee.Array([ee.List.repeat(0, nBands)])).double() 
+    
+    var upper = ee.Image([d1, d1, d1, d1.int32(), d1])
+    
+    // Create variable number of coef, rmse and change amplitude bands
+    var arrCenter = []
+    var arrBottom = []
+    for (var i = 0; i < nBands; i++) {
+      arrCenter.push(d2)
+      arrBottom.push(d1, d1)
+    } 
+    var center = ee.Image(arrCenter)
+    var bottom = ee.Image(arrBottom)
+    
+    var mock = upper.addBands(center).addBands(bottom).rename(fit.bandNames()).updateMask(fit.mask())
+    var newimage = ee.ImageCollection([mock, fit]).mosaic()
+    return newimage
+    
+  }***/
+    // let's change the fill data to -999999, this will cause less problems that zeros
+var newFillNoData = function(fit, nCoefs, nBands){
+  var d1 = ee.Image(ee.Array([-9999]).double())
+  var d2 = ee.Image(ee.Array([ee.List.repeat(-9999, nCoefs)])).double() 
+  
+  var upper = ee.Image([d1, d1, d1, d1.int32(), d1])
+  
+  // Create variable number of coef, rmse and change amplitude bands
+  var arrCenter = []
+  var arrBottom = []
+
+  for (var i = 0; i < nBands; i++) {
+    arrCenter.push(d2)
+    arrBottom.push(d1, d1)
+  } 
+  var center = ee.Image(arrCenter)
+  var bottom = ee.Image(arrBottom)
+  
+  var mock = upper.addBands(center).addBands(bottom).rename(fit.bandNames()).clip(fit.geometry())
+
+  var newimage = ee.ImageCollection([mock, fit]).mosaic()
+  return newimage
+  
+}
+/** 
+ * Return a date as days from 01-01-0000
+ * 
+ * @param {String}  str_date  Date in the format accepted by ee.Date
+ * @returns {ee.Number}   Date expressed as days since 01-01-0000
+ */ 
+var date_to_days = function(str_date){
+  var date = ee.Date(str_date)
+  // Number of days since 01-01-0000 unti 01-01-1970
+  var epoch = ee.Number(719177)
+  // Convert milis to days
+  var days = ee.Number(date.millis().divide(86400000))
+  return days.add(epoch)
+}
+
+
+/** 
+ * Find segments that intersect a given date
+ * 
+ * @param {ee.Image}    ccd_results     CCD results in long multi-band format
+ * @param {Number}      date            Date in the format that was used to run CCD 
+ * @paramg {ee.List}    seg_names       Segment names to use. 
+ * @returns {ee.Image}  segment_match   Mask image indicating segments that intersect the given date 
+ */
+var date_to_segment = function(ccd_results, date, seg_names){
+  var start_bands = ccd_results.select(".*_tStart").rename(seg_names)
+  var end_bands = ccd_results.select(".*_tEnd").rename(seg_names)
+  
+  var start = start_bands.lte(date)
+  var end = end_bands.gte(date)
+  
+  var segment_match = start.and(end)
+  return segment_match
+}
+
+
+
+/** 
+ * Filter coefficients for a given date using a mask
+ * 
+ * @param {ee.Image}  ccd_results CCD results in long multi-band format
+ * @param {String}    date        Date in the same format that CCD was run with
+ * @param {String}    band        Band to select. 
+ * @param {String}    coef        Coef to select. Options are "INTP", "SLP", "COS", "SIN", "COS2", 
+                                  "SIN2", "COS3", "SIN3", "RMSE", "MAG"
+ * @paramg {ee.List   seg_names   List of segment names to use. 
+ * @returns {ee.Image}   Single band image with the values for the selected band/coefficient
+ */
+var filter_coefs = function(ccd_results, date, band, coef, seg_names){
+  var seg_mask = date_to_segment(ccd_results, date, seg_names)
+  var sel_str = ".*".concat(band).concat(".*").concat(coef) // Client side concat
+  var coef_bands = ccd_results.select(sel_str)
+  var filtered_coef = coef_bands.mask(seg_mask)
+  return filtered_coef.reduce(ee.Reducer.max())
+}
+
+
+
+/** 
+ * Normalize intercept coefficient
+ * 
+ * 
+ * Normalize the intercept to the middle of the segment time period, instead
+ * of the 0 time period.
+ * 
+ * @param {ee.Image}      intercept     Image band representing model intercept
+ * @param {ee.Image}      start         Image band representing model slope date
+ * @param {ee.Image}      end           Image band representing model end date
+ * @param {ee.Image}      slope         Image band representing model slope
+ * 
+ * @returns {ee.Image}                  Image band representing normalized intercept.
+ * 
+ */ 
+var normalizeIntercept = function(intercept, start, end, slope) {
+  var middleDate = ee.Image(start).add(ee.Image(end)).divide(2)
+  var slopeCoef = ee.Image(slope).multiply(middleDate)
+  return ee.Image(intercept).add(slopeCoef)
+}
+
+
+
+
+
+/** 
+ * Get image of with a single coefficient for all bands
+ * 
+ * @param {ee.Image}    ccd results   CCD results in long multi-band format
+ * @param {String}      date          Date in the same format that CCD was run with
+ * @param {List}        band_list     List of all bands to include. 
+ * @param {List}        coef          Coef to select. Options are "INTP", "SLP", "COS", "SIN", "COS2", 
+ *                                    "SIN2", "COS3", "SIN3", "RMSE", "MAG"
+ * @paramg {ee.List     seg_names     List of segment names to use. 
+ * @returns {ee.Image}  coefs         Image with the values for the selected bands x coefficient
+ */
+var get_coef = function(ccd_results, date, band_list, coef, seg_names){
+  var inner = function(band){
+    var band_coef = filter_coefs(ccd_results, date, band, coef, seg_names)
+    return band_coef.rename(band.concat("_").concat(coef)) // Client side concat
+  }
+  var coefs = ee.Image(band_list.map(inner)) // Client side map
+  return coefs
+}
+
+
+
+/**
+ * Apply normalization to intercepts
+ * 
+ * @param {ee.Image}    band_coefs    Band x coefficients image. Must include slopes
+ * @param {ee.Image}    seg_start     Image with dates representing the start of the segment 
+ * @param {ee.Image}    seg_end       Image with dates representing the end of the segment
+ *
+ * @returns {ee.Image}  band_coefs    Updated input image with normalized intercepts
+ */
+var apply_norm = function(band_coefs, seg_start, seg_end){
+  var intercepts = band_coefs.select(".*INTP")
+  var slopes = band_coefs.select(".*SLP")
+  var normalized = normalizeIntercept(intercepts, seg_start, seg_end, slopes)
+  return band_coefs.addBands({srcImg:normalized, overwrite:true})
+}
+
+
+
+/**
+ * Get image of with bands x coefficients given in a list
+ * 
+ * @param {ee.Image}    ccd results   CCD results in long multi-band format
+ * @param {String}      date          Date in the same format that CCD was run with
+ * @param {List}        band_list     List of all bands to include. Options are "B1", "B2", "B3", "B4", "B5", "B6", "B7"
+ * @param {list}        coef_list     List of coefs to select. Options are "INTP", "SLP", "COS", "SIN", "COS2", 
+ *                                    "SIN2", "COS3", "SIN3", "RMSE", "MAG"
+ * @param {Bool}        cond          Normalize intercepts? If true, requires "INTP" and "SLP" to be selected
+ *                                    in coef_list.
+ * @paramg {ee.List}    seg_names     List of segment names to use. 
+ * 
+ * @returns {ee.Image}  coefs         Image with the values for the selected bands x coefficients
+ */
+var get_multi_coefs = function(ccd_results, date, band_list, coef_list, cond, seg_names){
+  // Non normalized
+  var inner = function(coef){
+    var inner_coef = get_coef(ccd_results, date, band_list, coef, seg_names)
+    return inner_coef
+  }
+
+  var coefs = ee.Image(coef_list.map(inner))
+
+  // Normalized
+  var seg_start = filter_coefs(ccd_results, date, "","tStart", seg_names)
+  var seg_end = filter_coefs(ccd_results, date, "","tEnd", seg_names)
+  var norm_coefs = apply_norm(coefs, seg_start, seg_end)
+  
+  var out_coefs = ee.Algorithms.If(cond, norm_coefs, coefs)
+  return ee.Image(out_coefs)
+}
+
+
+
+/**
+ * Filter segments with change in a given range
+ * 
+ * @param {ee.Image}    ccd results   CCD results in long multi-band format
+ * @param {Number}      startDate     Start date in the format that was used to run CCD 
+ * @param {Number}      endDate       End date in the format that was used to run CCD 
+ * @param {ee.List}     seg_names     List of segment names matching the number of segments in the bands
+ * 
+ * @returns{ee.Image}                 Mask image indicating which pixel/segments have changes in the 
+ *                                    specified time range.
+**/
+var getChanges = function(ccd_results, startDate, endDate, seg_names){
+  var break_bands = ccd_results.select(".*_tBreak").rename(seg_names)
+  var segment_match = break_bands.gte(startDate).and(break_bands.lt(endDate))
+  return segment_match
+}
+
+/**
+ * Obtain change with largest magnitude, timing of that break, and total number of breaks 
+ * for a given date range and band
+ * 
+ * @param {ee.Image}    ccd results   CCD results in long multi-band format
+ * @param {Number}      startDate     Start date in the format that was used to run CCD 
+ * @param {Number}      endDate       End date in the format that was used to run CCD 
+ * @param {String}      band          Spectral band
+ * @param {ee.List}     seg_names     List of segment names matching the number of segments in the bands
+ * 
+ * @returns{ee.Image}                 Image with three bands indicating:
+ *                                      1) Magnitude of the largest break for the given date range
+ *                                      2) Timing of largest break (in the time units CCDC was run in)
+ *                                      3) Total number of breaks in the date range
+**/
+
+var filterMag = function(ccd_results, startDate, endDate, band, seg_names){
+  var seg_mask = getChanges(ccd_results, startDate, endDate, seg_names)
+  var sel_str = ".*".concat(band).concat(".*").concat("MAG") // Client side concat
+  var feat_bands = ccd_results.select(sel_str)
+  var filteredMag = feat_bands.mask(seg_mask).reduce(ee.Reducer.max())
+  var numTbreak = ccd_results.select(".*tBreak").mask(seg_mask).reduce(ee.Reducer.count())
+  var filteredTbreak = ccd_results.select(".*tBreak").mask(seg_mask).reduce(ee.Reducer.max())
+  return filteredMag.addBands(filteredTbreak)
+                    .addBands(numTbreak)
+                    .rename(['MAG', 'tBreak', 'numTbreak'])
+}
+
+/**
+ * Get phase and amplitude for a single spectral band
+ * 
+ * @param {ee.Image}    ccd results   CCD results in long multi-band format
+ * @param {String}      sinName       Name of the band with the first sine harmonic coefficient
+ * @param {String}      cosName       Name of the band with the first cosine harmonic coefficient
+ * @param {String}      prefix        Prefix to append to output band name (e.g. "RED")
+ * 
+ * @returns{ee.Image}                 Image with two bands representing phase and amplitude of
+ *                                    the first harmonic
+ *                                      
+**/
+var phaseAmplitude = function(img, sinName, cosName, prefix){
+    var phase =  img.select(sinName).atan2(img.select(cosName))
+      // Scale to [0, 1] from radians.
+      .unitScale(-Math.PI, Math.PI)
+      .rename(prefix.concat('_PHASE'))
+    
+    var amplitude = img.select(sinName).hypot(img.select(cosName)).rename(prefix.concat("_AMPLITUDE"))
+    return phase.addBands(amplitude)
+  }
+
+/* ------------------------ Apply scaling Factor ------------------------ */
+var c2ToSR = function(img) {
+  return img.addBands(img.multiply(0.0000275).add(-0.2).multiply(10000), img.bandNames(), true);
+};
+
+
+/* ------------------------ Apply mask ------------------------*/
+
+//see https://developers.google.com/earth-engine/guides/ic_visualization
+var maskLandsat = function(img) {
+  
+  var sr = c2ToSR(img.select(['BLUE', 'GREEN', 'RED', 'NIR', 'SWIR1', 'SWIR2']))
+//  var validQA = [21824, 21888];
+//  var mask1 = img.select(['QA_PIXEL']).remap(validQA, ee.List.repeat(1, validQA.length), 0);
+  var qaMask = img.select('QA_PIXEL').bitwiseAnd(parseInt('11111', 2)).eq(0);
+  var saturationMask = img.select('QA_RADSAT').eq(0);
+  var minMask = sr.reduce(ee.Reducer.min()).gt(0);
+  var maxMask = sr.reduce(ee.Reducer.max()).lt(10000);
+ 
+ 
+  return sr.updateMask(qaMask.and(saturationMask).and(minMask).and(maxMask))
+            .set({'system:time_start': img.get('system:time_start')});
+};
+
+/* ------------------------ Add image date to collection ------------------------*/
+
+
+var addImgDate = function(col) {
+  return col.map(function(img){
+    return img.set({image_date: img.date().format('yyyy-MM-dd')});
+  });
+};
+
+/* ------------------------ Create day composites ------------------------*/
+
+var dailyComposite = function(col) {
+  var dates = col.aggregate_array('image_date').distinct();
+  
+  var combine = function(col) {
+    var img = col.mosaic();
+    var first = col.first();
+    return img.rename(first.bandNames()).copyProperties(first).set({'system:time_start': first.get('system:time_start')});
+  };
+  
+  return ee.ImageCollection(dates.map(function(date) {
+    var col2 = col.filterMetadata('image_date', 'equals', date);
+    return combine(col2);
+  }));
+};
+
+
+/* ----------------- Topographic correction: --------------------- */
+
+
+// Función combinada de corrección topográfica con IC y método SCSc
+function topographicCorrection(img) {
+  // Constantes y preparación
+
+  var geometry = img.geometry().buffer(10000);
+  var degree2radian = Math.PI / 180;
+  var dem = ee.Image("USGS/SRTMGL1_003").clip(geometry);
+
+  var sunElevation = ee.Number(img.get('SUN_ELEVATION'));
+  var sunAzimuth = ee.Number(img.get('SUN_AZIMUTH'));
+
+  // Calcular ángulos solares en radianes
+  var SZ_rad = ee.Image.constant(ee.Number(90).subtract(sunElevation).multiply(degree2radian));
+  var SA_rad = ee.Image.constant(sunAzimuth.multiply(degree2radian));
+
+  // Calcular pendiente y orientación en radianes
+  var slope = ee.Terrain.slope(dem).rename('slope');
+  var slp_rad = slope.multiply(degree2radian);
+  var asp_rad = ee.Terrain.aspect(dem).multiply(degree2radian);
+
+  // Calcular componentes de la condición de iluminación
+  var cosZ = SZ_rad.cos();
+  var cosS = slp_rad.cos();
+  var sinZ = SZ_rad.sin();
+  var sinS = slp_rad.sin();
+  var cosAziDiff = SA_rad.subtract(asp_rad).cos();
+
+  var slope_illumination = cosZ.multiply(cosS);
+  var aspect_illumination = sinZ.multiply(sinS).multiply(cosAziDiff);
+  var IC = slope_illumination.add(aspect_illumination).rename('IC');
+
+  // Agregar bandas necesarias al original
+  var img_plus_ic = img
+    .addBands(IC)
+    .addBands(cosZ.rename('cosZ'))
+    .addBands(cosS.rename('cosS'))
+    .addBands(slope);
+
+  // Máscara para aplicar SCSc
+  var mask2 = img_plus_ic.select('slope').gte(5)
+    .and(img_plus_ic.select('IC').gte(0))
+    .and(img_plus_ic.select('NIR').gt(-0.1));
+  var img_masked = img_plus_ic.updateMask(mask2);
+
+  // Bandas a corregir
+  var bandList = ['BLUE', 'GREEN', 'RED', 'NIR', 'SWIR1', 'SWIR2'];
+  var nonCorrectBands = img.select(img.bandNames().removeAll(bandList));
+
+  // Función para aplicar la corrección SCSc a cada banda
+  function applySCSc(bandName) {
+    var fit = img_masked.select(['IC', bandName]).reduceRegion({
+      reducer: ee.Reducer.linearFit(),
+      geometry: geometry.buffer(-5000),
+      scale: 300,
+      maxPixels: 1e9
+    });
+
+    var a = ee.Number(fit.get('scale'));
+    var b = ee.Number(fit.get('offset'));
+    var c = b.divide(a);
+
+    return ee.Algorithms.If(
+      fit,
+      img_masked.expression(
+        '((image * (cosS * cosZ + c)) / (IC + c))',
+        {
+          'image': img_masked.select(bandName),
+          'IC': img_masked.select('IC'),
+          'cosS': img_masked.select('cosS'),
+          'cosZ': img_masked.select('cosZ'),
+          'c': c
+        }
+      ).rename(bandName),
+      img_masked.select(bandName)
+    );
+  }
+
+  // Aplicar corrección a todas las bandas seleccionadas
+  var correctedBands = ee.Image(bandList.map(function(b) {
+    return applySCSc(b);
+  })).addBands(img_plus_ic.select('IC'));
+
+  var bandList_IC = ee.List(bandList).add('IC');
+  correctedBands = correctedBands
+    .unmask(img_plus_ic.select(bandList_IC))
+    .select(bandList);
+
+  // Reconstruir imagen final
+  var final = correctedBands
+    .addBands(nonCorrectBands)
+    .setMulti(img.toDictionary())
+    .set('system:time_start', img.get('system:time_start'));
+
+  return ee.Image(final);
+}
+
+
+/*--------------- Unmixing calculation CCDC-SMA -------------------*/
+// Function obtained from Share Repo: users/shijuanchen32/forest_degradation_georgia/utilities/ut_workflow
+
+var unmixing = function(col, endMembers) {   
+  var gv = endMembers.gv;
+  var npv = endMembers.npv;
+  var soil = endMembers.soil;
+  var shade = endMembers.shade;
+  var cloud = endMembers.cloud;
+  var cfThreshold = endMembers.cfThreshold;
+   
+
+  
+  return col.map(function(img){
+    
+    var ndvi = img.normalizedDifference(['NIR', 'RED']).multiply(10000).rename('NDVI');
+    var nbr = img.normalizedDifference(['NIR', 'SWIR2']).multiply(10000).rename('NBR');
+    var wetness = img.expression(
+        '(L1 * B1) + (L2 * B2) + (L3 * B3) + (L4 * B4) + (L5 * B5) + (L6 * B6)',
+        {
+            'L1': img.select('BLUE'),
+            'B1': 0.0315,
+            'L2': img.select('GREEN'),
+            'B2': 0.2021,
+            'L3': img.select('RED'),
+            'B3': 0.3102,
+            'L4': img.select('NIR'),
+            'B4': 0.1594,
+            'L5': img.select('SWIR1'),
+            'B5': -0.6806,
+            'L6': img.select('SWIR2'),
+            'B6': -0.6109
+        }).multiply(10000).rename('WETNESS')
+    var unmixed = img.select(['BLUE', 'GREEN', 'RED', 'NIR', 'SWIR1', 'SWIR2'])
+                    .unmix([gv, shade, npv, soil, cloud], true, true)
+                    .rename(['GV','Shade','NPV','Soil','Cloud']);
+    var maskCloud = unmixed.select('Cloud').lt(cfThreshold);
+    var maskShade = unmixed.select('Shade').lt(1);
+    
+    var NDFI = unmixed.expression(
+          '10000 * ((GV / (1 - SHADE)) - (NPV + SOIL)) / ((GV / (1 - SHADE)) + (NPV + SOIL))', 
+          {
+            'GV': unmixed.select('GV'),
+            'SHADE': unmixed.select('Shade'),
+            'NPV': unmixed.select('NPV'),
+            'SOIL': unmixed.select('Soil')
+          }).rename('NDFI');
+          
+    var maskNDFI = unmixed.expression(
+        '(GV / (1 - SHADE)) + (NPV + SOIL)', 
+        {
+          'GV': unmixed.select('GV'),
+          'SHADE': unmixed.select('Shade'),
+          'NPV': unmixed.select('NPV'),
+          'SOIL': unmixed.select('Soil')
+        }).gt(0);
+    return img.addBands(unmixed.select(['GV','Shade','NPV','Soil']).multiply(10000))
+              .addBands(NDFI).addBands(ndvi).addBands(nbr).addBands(wetness)
+              .updateMask(maskCloud).updateMask(maskNDFI).updateMask(maskShade)
+  });
+};
+ 
+ 
+ /* Remove images with errors */ 
+var safeMap = function(collection, fn) {
+  return ee.ImageCollection(
+    collection.map(function(img) {
+      return ee.Algorithms.If(
+        img.bandNames(), // Si puede acceder a bandas, entonces existe
+        fn(ee.Image(img)),
+        null
+      );
+    }).filter(ee.Filter.notNull(['system:time_start']))
+  );
+};
+
+
+/*--------------- Create Landsat ImageCollection -------------------*/
+
+// Mostrar resultados en el mapa
+
+
+var getLandsatColl = function(region , params, endMembers, merge) {
+ 
+  var start_date = ee.String((ee.Number(params.get('start_year')).subtract(3))).cat('-01-01')
+  var end_date =  ee.String((ee.Number(params.get('end_year')))).cat('-12-31')
+  var start_day = ee.Number(params.get('start_day'))
+  var end_day = ee.Number(params.get('end_day')) 
+  var WRS_PATH = ee.Number(params.get('path')) 
+  var WRS_ROW = ee.Number(params.get('row')) 
+  
+  var cloudCover = ee.Number(params.get('cloud_cover'))
+  var inBands457 = ee.List(['SR_B1', 'SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B7','QA_PIXEL', 'QA_RADSAT'])
+  var inBands89 = ee.List(['SR_B2','SR_B3','SR_B4','SR_B5','SR_B6','SR_B7','QA_PIXEL', 'QA_RADSAT'])
+  var outBands = ee.List(['BLUE','GREEN','RED','NIR','SWIR1','SWIR2','QA_PIXEL', 'QA_RADSAT']); 
+
+  var collection4 = ee.ImageCollection('LANDSAT/LT04/C02/T1_L2')
+      .filter(ee.Filter.and(ee.Filter.eq('WRS_PATH',WRS_PATH),ee.Filter.eq('WRS_ROW',WRS_ROW)))
+      .filter(ee.Filter.lt('CLOUD_COVER', cloudCover))
+      .filterDate(start_date, end_date)
+      .filter(ee.Filter.dayOfYear(start_day,end_day)) 
+      .select(inBands457,outBands)
+
+  var collection5 = ee.ImageCollection('LANDSAT/LT05/C02/T1_L2')
+      .filter(ee.Filter.and(ee.Filter.eq('WRS_PATH',WRS_PATH),ee.Filter.eq('WRS_ROW',WRS_ROW)))
+      .filter(ee.Filter.lt('CLOUD_COVER', cloudCover))
+      .filterDate(start_date, end_date)
+      .filter(ee.Filter.dayOfYear(start_day,end_day))       
+      .select(inBands457,outBands)
+
+  var collection7 = ee.ImageCollection('LANDSAT/LE07/C02/T1_L2')
+      .filter(ee.Filter.and(ee.Filter.eq('WRS_PATH',WRS_PATH),ee.Filter.eq('WRS_ROW',WRS_ROW)))
+      .filter(ee.Filter.lt('CLOUD_COVER', cloudCover))
+      .filter(ee.Filter.inList('system:index',['LE07_205031_20230710', 'LE07_202035_20230830',
+      'LE07_197031_19990723', 'LE07_197031_19991011', 'LE07_203030_19990717', 'LE07_197031_20050925']).not())
+      .filterDate(start_date, end_date)
+      .filter(ee.Filter.dayOfYear(start_day,end_day)) 
+      .select(inBands457,outBands)
+
+  var collection8 = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')
+      .filter(ee.Filter.and(ee.Filter.eq('WRS_PATH',WRS_PATH),ee.Filter.eq('WRS_ROW',WRS_ROW)))
+      .filter(ee.Filter.lt('CLOUD_COVER', cloudCover))
+      .filterDate(start_date, end_date)
+      .filter(ee.Filter.dayOfYear(start_day,end_day))       
+      .select(inBands89,outBands)
+      
+  var collection9 = ee.ImageCollection('LANDSAT/LC09/C02/T1_L2')
+      .filter(ee.Filter.and(ee.Filter.eq('WRS_PATH',WRS_PATH),ee.Filter.eq('WRS_ROW',WRS_ROW)))
+      .filter(ee.Filter.lt('CLOUD_COVER', cloudCover))
+      .filterDate(start_date, end_date)
+      .filter(ee.Filter.dayOfYear(start_day,end_day)) 
+      .select(inBands89,outBands)
+
+  var col = collection4.merge(collection5).merge(collection7).merge(collection8).merge(collection9);
+  col = col.map(topographicCorrection)
+           .map(maskLandsat)
+          
+  col = unmixing(col, endMembers);
+  return col
+};
+ 
+
+/* --- Create a classify seg. table; merge it into the regional classified seg table --*/ 
+
+var mapfuncImage = function(feat,imageToExtract) { 
+  var geom = feat.geometry()
+  var addProp = function(img, f) {
+    var newf = ee.Feature(f)
+    // var date = img.date().format('yyyy-MM-dd')
+    var bands = img.bandNames()
+    var value = img.select(bands)
+                    .reduceRegion(ee.Reducer.mode(), geom, 30, 'EPSG:4326')
+    var fun = function(name, ini) {
+      var ini = ee.Feature(ini)
+      var val = value.get(name)
+      var newname = ee.String('PixelExtraction')
+      return ee.Feature(ee.Algorithms.If(val,
+              ini.set(newname, ee.String(val)),
+              ini.set(newname, ee.String('No data'))))
+      }
+    
+    return ee.Feature(bands.iterate(fun, newf)) 
+    }
+      
+    var ImageExtraction = ee.Feature(addProp(imageToExtract, feat))
+    return ImageExtraction
+  };
+    
+
+/*--------------- Assign new ID in a Feature Collection -------------------*/
+
+
+function assignId(featureColl, attributeName) {
+  attributeName = attributeName || 'ID'
+  var value = 0 
+  var fcList = featureColl.toList(featureColl.size())
+  var newCol = featureColl.map(function(feat) {
+    var id = fcList.indexOf(feat)
+    return feat.set(attributeName , id.add(1));
+      })
+    return newCol
+};
+
+/*-------------------------- Get Year ------------------------------*/
+
+var get_year = function (S_days) {
+  var S_y = ee.Image(S_days).divide(ee.Image(365.25)).toInt();
+  return ee.Image(S_y);
+};
+/*------------------------------------------------------------------------------*/
+
+var get_syn = function(ccdc, date) {
+  var SEGS = ["S1", "S2", "S3", "S4", "S5", "S6"];
+  var bands = ['GV', 'Shade', 'NPV', 'Soil', 'NDFI', 'NDVI','WETNESS', 'NBR'];
+  var ccdImage = newBuildCcdcImage(ccdc, SEGS.length, bands);
+  var formattedDate = date_to_days(date);
+  var synthetic = getMultiSynthetic(ccdImage, formattedDate, bands);
+  return synthetic;
+};
+/*---------------- Classify Segments ------------------*/
+function classifySegments(geo, ccdc, params_cl,  ab_threshold, gr_threshold, ch_prob) {
+  var SEGS = ["S1", "S2", "S3", "S4", "S5", "S6"];
+  var bands = ['GV', 'Shade', 'NPV', 'Soil', 'NDFI', 'NDVI','WETNESS', 'NBR'];
+  var numberOfSegments = SEGS.length;
+  //the newBuildCcdcImage_deg only retrived coefs for degradation,
+  //whereas the newBuildCcdcImage retrived all coefs
+  var ccdcInput = newBuildCcdcImage_deg(ccdc, SEGS.length, bands);
+  
+  //get image collection of synthetic images
+  var syn_col = [];
+  var start_y = params_cl.get('start_year').getInfo();
+  var end_y = params_cl.get('end_year').getInfo(); 
+  
+  for (var y = (start_y-1); y <= end_y; y++){
+    var date = y.toString() + '-07-31';
+    var syn_image = get_syn(ccdc, date);
+    //create a mask that fitler when all endmembers are zero
+    var sum_mask = syn_image.select('Soil').add(syn_image.select('NPV')).add(syn_image.select('Shade')).add(syn_image.select('GV')); 
+    var syn_image_output = syn_image.updateMask(sum_mask).setMulti({'year':y});
+    syn_col.push(syn_image_output);
+  }
+  syn_col = ee.ImageCollection(syn_col);
+  
+  var dcd_forest_mask = ee.Image(params_cl.get('forest_type')).eq(params_cl.get('dcd').getInfo());
+  var cnf_forest_mask = ee.Image(params_cl.get('forest_type')).eq(params_cl.get('cnf').getInfo());
+  var mix_forest_mask = ee.Image(params_cl.get('forest_type')).eq(params_cl.get('mix').getInfo());
+ 
+
+  
+  var forest_mask = dcd_forest_mask.or(cnf_forest_mask).or(mix_forest_mask).selfMask()
+
+  // Map over segments
+  var segmentsClassified = ee.List.sequence(1, numberOfSegments)
+    .map(function(seg) {
+
+  // Another string to remove segment prefix
+      var str = ee.String('S')
+        .cat(ee.String(ee.Number(seg).int8()))
+        .cat('.*')
+
+      // Another string to remove segment prefix
+      var str2 = ee.String('S')
+        .cat(ee.String(ee.Number(seg).int8()))
+        .cat('_');
+        
+      // Select bands to classify 
+      var imageToClassify = ccdcInput;
+      var seg_bands = imageToClassify.select([str])
+      //
+      var numobs_mask = seg_bands.select(str2.cat('numObs')).gt(20)
+      
+      seg_bands = seg_bands.updateMask(seg_bands.select(str2.cat('tStart')).gt(0))
+
+      //gradual_loss_only is 1
+      var Soil_SLP = seg_bands.select(str2.cat('Soil_coef_SLP'));
+      var deg_soil = Soil_SLP.gt(0.1).updateMask(numobs_mask)
+      var gradual_loss = ee.Image(1).updateMask(deg_soil).updateMask(forest_mask).toInt8();
+      
+      var S_tBreak = ccdcInput.select(str2.cat('tBreak'));
+
+      var S_tBreak_y = get_year(S_tBreak).updateMask(S_tBreak);
+
+      var S_tBreak_b = S_tBreak_y.subtract(1);
+      var S_tBreak_a = S_tBreak_y.add(1);
+      
+      var mag_collection = [];
+      for(var i = start_y; i <= (end_y-1); i++){   
+        
+        var year_mask = S_tBreak_y.updateMask(S_tBreak_y.eq(ee.Image(i)));
+      
+        var previous = syn_col.filterMetadata('year', "less_than", i).sort('year', true).mosaic(); //if previous, use ascending order (in case the previous year snythetic image is not avaliable)
+      
+        var later = syn_col.filterMetadata('year', "greater_than", i).sort('year', false).mosaic(); //if later, use descending order (in case the later year snythetic image is not avaliable)
+      
+        var mag_syn = later.subtract(previous).updateMask(year_mask)
+      
+        mag_collection.push(mag_syn)
+      }
+      //for the last year
+      i = end_y;
+      
+      year_mask = S_tBreak_y.updateMask(S_tBreak_y.eq(ee.Image(i)));
+    
+      previous = syn_col.filterMetadata('year', "less_than", i).sort('year', true).mosaic(); //if previous, use ascending order
+    
+      later = syn_col.filterMetadata('year', "equals", end_y).mosaic(); 
+    
+      mag_syn = later.subtract(previous).updateMask(year_mask)
+    
+      mag_collection.push(mag_syn)
+
+
+      var S_syn_mag = ee.ImageCollection(mag_collection).mosaic().updateMask(forest_mask);
+      var mag_NDFI = S_syn_mag.select('NDFI').rename(str2.cat('NDFI_MAG')); 
+      var mag_soil = S_syn_mag.select('Soil').rename(str2.cat('Soil_MAG'));
+      var mag_shade = S_syn_mag.select('Shade').rename(str2.cat('Shade_MAG'));
+      var mag_gv = S_syn_mag.select('GV').rename(str2.cat('GV_MAG'));
+      var mag_npv = S_syn_mag.select('NPV').rename(str2.cat('NPV_MAG'));
+      var mag_ndvi = S_syn_mag.select('NDVI').rename(str2.cat('NDVI_MAG'));
+      var mag_nbr = S_syn_mag.select('NBR').rename(str2.cat('NBR_MAG'));
+      
+      //abrupt_loss only is 2
+      //syn ab_combine_deg_cnf
+      var ab_combine_cnf = mag_soil.add(mag_npv).subtract(mag_shade).subtract(mag_NDFI)
+      var abrupt_loss_cnf = ee.Image(2).updateMask(cnf_forest_mask)
+                                      .updateMask(ab_combine_cnf.gt(2300*(ab_threshold/100)))
+                                    //  .updateMask(mag_nbr.gt(0.1))
+
+     
+      //syn nMAG_NDFI_deg_mix
+      var nMAG_NDFI_deg_mix = mag_NDFI.multiply(-1).divide(ccdcInput.select(str2.cat('NDFI_RMSE')))
+      var abrupt_loss_mix = ee.Image(2).updateMask(mix_forest_mask)
+                                      .updateMask(nMAG_NDFI_deg_mix.gt(1*(ab_threshold/100)))
+                                  //    .updateMask(mag_nbr.gt(0.1))
+
+      //org ab_combine_deg_cdc
+      var ab_combine_deg_dcd = seg_bands.select(str2.cat('Soil_MAG'))
+                      .subtract(seg_bands.select(str2.cat('NDFI_MAG')))
+                      .subtract(seg_bands.select(str2.cat('GV_MAG')));
+                      
+      var abrupt_loss_dcd = ee.Image(2).updateMask(dcd_forest_mask)
+                          .updateMask(ab_combine_deg_dcd.gt(4000*ab_threshold/100))
+
+                   
+      var abrupt_loss = ee.ImageCollection([abrupt_loss_cnf.toInt8(),
+                        abrupt_loss_mix.toInt8(),abrupt_loss_dcd.toInt8()]).mosaic()    
+                                
+     
+      // Add a threshold for change probability 
+      var chProb_mask = seg_bands.select(str2.cat('changeProb')).gt(ch_prob);
+
+      abrupt_loss = abrupt_loss.updateMask(chProb_mask).toInt8();
+ 
+      //If both the value is 3
+      var both = ee.Image(3).updateMask(gradual_loss.and(abrupt_loss))
+      var forest_loss = ee.ImageCollection([abrupt_loss, gradual_loss, both]).mosaic()
+      // Make names for bands
+      var segStr = ee.String('S').cat(ee.String(ee.Number(seg).int8()));
+      var className = segStr.cat('_forest_loss');
+      var startName = segStr.cat('_tStart');
+      var breakName = segStr.cat('_tBreak');
+      var breakMonthName = segStr.cat('_tBreakMonth');
+      var EndName = segStr.cat('_tEnd');
+      var chProbName = segStr.cat('_chProb')
+      var numObsName = segStr.cat('_numObs')
+      var magNdfiName = segStr.cat('_NDFI_MAG')
+      var magNdviName = segStr.cat('_NDVI_MAG')
+      var magNbrName = segStr.cat('_NBR_MAG')
+
+
+      var seg_forest_loss = forest_loss.rename(className);
+      var seg_tstart = seg_bands.select(str2.cat('tStart')).rename(startName);
+      var seg_tend = seg_bands.select(str2.cat('tEnd')).rename(EndName);
+      var seg_tbreak = seg_bands.select(str2.cat('tBreak')).rename(breakName);
+      var seg_chProb = seg_bands.select(str2.cat('changeProb')).multiply(100).rename(chProbName)
+      var seg_breakMonth =  seg_tbreak.rename(breakMonthName);
+      var seg_numObs = seg_bands.select(str2.cat('numObs')).rename(numObsName)
+      var seg_MAgNdfi = mag_NDFI.select(str2.cat('NDFI_MAG')).rename(magNdfiName)
+      var seg_MagNbr = mag_nbr.select(str2.cat('NBR_MAG')).rename(magNbrName)
+      var seg_MAgNdvi = mag_ndvi.select(str2.cat('NDVI_MAG')).rename(magNdviName)
+       
+    
+                      
+      var seg_output = ee.Image.cat(
+          forest_loss.rename(className),
+          get_year(seg_tstart),
+          get_year(seg_tend),
+          get_year(seg_tbreak),
+          seg_breakMonth,
+          seg_MAgNdfi,
+          seg_MagNbr,
+          seg_MAgNdvi
+
+        )
+
+    return seg_output
+    })
+    var classified = ee.ImageCollection(segmentsClassified);
+
+    // When reducing to bands the names change and gives an error upon export
+    var bns = ee.List(classified
+      .map(function(i) 
+        {return i.set('bn', i.bandNames())})
+      .aggregate_array('bn'))
+      .flatten();
+
+    // Reduce to bands and rename to original band names
+    classified = classified.toBands().rename(bns);
+
+    return classified
+};
+
+
+// ----------------------------------------------------------------------------
+
+/*---------------- Run the algorithm ------------------*/
+
+var study_period =  ee.Dictionary({
+          start_year: 1985,  
+          end_year: 2024
+    })
+var ab_threshold = 99, //   // Percentage (%) of the original threshold for the abrupt degradation
+    gr_threshold = 0.25, //  // Threshold for the gradual degradation
+    ch_prob = 0.99 //      // change probability 
+    
+var ccdc_params = ee.Dictionary({
+    'consec': 6,
+    'chi_prob': 0.99,
+    'min_year':1,
+    'lambda': 10, 
+    'maxIterations': 10000,
+    'break_bands':['NDFI', 'GV', 'NPV', 'Soil', 'Shade', 'NDVI', 'NBR', 'WETNESS']
+   });
+    
+var  params_cl = ee.Dictionary({
+    'forest_type':forestType, 
+    'dcd': 311, 
+    'cnf': 312, 
+    'mix': 313,
+    'start_year': study_period.get('start_year').getInfo(),
+    'end_year': study_period.get('end_year').getInfo()
+      })
+
+/* ---------------------------------------------------------------------------------------*/
+var region_list = ['M', 'T']
+for (var region_i = 0; region_i < 2; region_i++) {
+  
+  var region = region_list[region_i]
+  var regionName = region
+  print(regionName, 'regionName')
+
+   if (region === 'M'){
+  var landtiles = [197, 31], 
+                    [197, 32],
+                    [198, 31],
+                    [198, 32],
+                    [198, 33],
+                    [199, 30],
+                    [199, 32],
+                    [199, 31],
+                    [199, 32],
+                    [199, 33],
+                    [199, 34],
+                    [200, 30],
+                    [200, 31],
+                    [200, 32],
+                    [200, 33],
+                    [200, 34],
+                    [200, 35],
+                    [201, 30],
+                    [201, 31],
+                    [201, 32],
+                    [201, 33],
+                    [201, 34],
+                    [201, 35],
+                    [202, 30],
+                    [202, 31],
+                    [202, 32],
+                    [202, 33],
+                    [202, 34],
+                    [202, 35],
+                    [203, 30],
+                    [203, 31],
+                    [203, 32],
+                    [203, 33],
+                    [203, 34],
+                    [204, 30],
+                    [204, 31]]
+       
+  var endMembers = {
+                      gv: [227,	453,	348,	2693,	1178,	534], 
+                      npv:  [252,500,575,2353,1646,817], 
+                      soil: [719,1001,724,1754,2351, 1890],
+                      shade: [0, 0, 0, 0, 0, 0],
+                      cloud: [1678, 1986, 1884, 4518, 3404, 2148],
+                      cfThreshold: 0.2  //  ccdc-sma cloud mask threshold 
+                      }
+
+   } else if (region === 'T'){
+    var landtiles = [
+                      [197, 31],
+                      [198, 30],
+                      [198, 31],
+                      [199, 30],
+                      [199, 31],
+                      [200, 30],
+                      [200, 31],
+                      [201, 30],
+                      [202, 30],
+                      [203, 30],
+                      [204, 30],
+                      [204, 31],
+                      [205, 30],
+                      [205, 31]
+                  ]
+                      
+      var endMembers = {
+                gv: [207,422, 272, 3639, 1535,	636], 
+                npv:[189, 391, 510, 1941, 1633, 840],
+                soil: [719,1001,724,1754,2351,1890], 
+                shade: [0, 0, 0, 0, 0, 0],
+                cloud: [1678, 1986, 1884, 4518, 3404, 2148],
+                cfThreshold: 0.2    //  ccdc-sma cloud mask threshold 
+                }
+       }  
+  
+
+  for (var i = 0; i <=  landtiles.length-1; i++) {
+    
+    // Details of the desired Landsat variables to create the image collection 
+    
+    var regionName = region
+
+    /*------------------------------------------------------------------------------------*/
+    var path = landtiles[i][0]
+    var row =  landtiles[i][1]
+    var subset_region =  landsat_tiles.filter(ee.Filter.and(ee.Filter.eq('PATH', path), ee.Filter.eq('ROW', row)))
+    subset_region = subset_region.first()     
+    subset_region = ee.Feature(subset_region);  // Si necesitas un solo feature
+    Map.addLayer(subset_region,{}, 'region')
+    var params_landsat = ee.Dictionary({
+          start_year: study_period.get('start_year').getInfo(),  // Note Landsat collection is created with  (start year - 3 additional years before)
+          end_year: study_period.get('end_year').getInfo(),  //
+          start_day : 1,  //
+          end_day : 365,  //
+          cloud_cover: 90,
+          path: path ,  
+          row: row 
+        })
+    
+
+
+  
+  var SMA_c2 = getLandsatColl(subset_region, params_landsat, endMembers);
+
+
+  var ccdc_sma = ee.Algorithms.TemporalSegmentation.Ccdc({
+                  dateFormat: 0,  //The gradual threshold is based on Julian dates, so use jDays here. 
+                  collection: SMA_c2,  
+                  minObservations: ccdc_params.get('consec'), 
+                  chiSquareProbability: ccdc_params.get('chi_prob'),
+                  minNumOfYearsScaler: ccdc_params.get('min_year'),
+                  breakpointBands:ccdc_params.get('break_bands') });
+  
+    print(ccdc_sma,'ccdc_sma' )
+    
+    
+  var classify = classifySegments(subset_region, ccdc_sma, params_cl,  
+      ab_threshold, gr_threshold, ch_prob);
+    
+  classify = classify.clip(subset_region);
+
+
+ Export.image.toAsset({
+                image: classify.toInt32(),
+                description: regionName + '_' + path + '_' + row ,
+                assetId: regionName  + '_' + path + '_' + row,
+                scale: 30,
+                region: subset_region,
+                crs: 'EPSG:32630',
+                maxPixels: 1e13,
+              });
+  
+ 
+
+  }
+}

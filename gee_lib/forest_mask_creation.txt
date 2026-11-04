@@ -1,0 +1,108 @@
+// Límite de España
+var spain_limit = ee.FeatureCollection("users/carmenromerodigon1964/delimitacion");
+
+// Función para crear máscara de bosque
+function getForestMask(image) {
+  var lc = image.select('landcover');
+  var forestCodes = [311, 312, 313, 323, 324];
+  var forestMask = lc.remap(forestCodes, ee.List.repeat(1, forestCodes.length)); // asigna 1 donde hay bosque
+  return forestMask.mask(forestMask);  // aplica máscara donde hay 1
+}
+ 
+// Imágenes CORINE
+var lc1990 = ee.Image('COPERNICUS/CORINE/V20/100m/1990');
+var lc2018 = ee.Image('COPERNICUS/CORINE/V20/100m/2018');
+
+// Máscaras de bosque
+var forest1990 = getForestMask(lc1990);
+var forest2018 = getForestMask(lc2018);
+
+// Histograma (opcional, puedes quitar si no lo necesitas)
+var hist1990 = forest1990.reduceRegion({
+  reducer: ee.Reducer.frequencyHistogram(),
+  geometry: spain_limit.geometry(),
+  scale: 500,
+  maxPixels: 1e13
+});
+var hist2018 = forest2018.reduceRegion({
+  reducer: ee.Reducer.frequencyHistogram(),
+  geometry: spain_limit.geometry(),
+  scale: 500,
+  maxPixels: 1e13
+});
+print('Histograma 1990', hist1990);
+print('Histograma 2018', hist2018);
+
+// Unmask con 0
+forest1990 = forest1990.unmask(0);
+forest2018 = forest2018.unmask(0);
+Map.addLayer(forest1990, {}, 'Bosque 1990');
+
+// Combinación con valor máximo
+var combinedForest = ee.ImageCollection([forest1990, forest2018])
+                        .reduce(ee.Reducer.max())
+                        .gt(0) // binariza: 1 si hay bosque en al menos un año
+                        .toByte()
+                        .clip(spain_limit);
+
+// Visualización
+Map.centerObject(spain_limit, 6);
+Map.addLayer(combinedForest, {min: 0, max: 1, palette: ['white', 'green']}, 'Bosque combinado');
+
+// Configura la exportación
+Export.image.toAsset({
+  image: combinedForest,
+  description: 'bosque2',
+  assetId: 'bosque2', // Reemplaza 'tu_usuario' con tu nombre de usuario
+  region: spain_limit, // Define la geometría de la región que deseas exportar
+  crs: 'EPSG:32630',
+  scale: 30, // Escala de exportación (100 m en este caso)
+  maxPixels: 1e13 // Número máximo de píxeles para evitar errores de tamaño
+});
+
+// Parte 2: Crear mapa fe tipo de bsoque:
+var forestType2018 = lc2018.mask(forest2018)
+                           .where(lc2018.eq(323), 314)
+                           .where(lc2018.eq(324), 314);
+
+var forestType1990 = lc1990.mask(forest1990)
+                            .where(lc1990.eq(323), 314)
+                           .where(lc1990.eq(324), 314);
+
+var forestType = ee.ImageCollection([forestType2018, forestType1990])
+                        .reduce(ee.Reducer.firstNonNull())
+                        .clip(spain_limit);
+
+// Histograma (opcional, puedes quitar si no lo necesitas)
+var histcombined = forestType.reduceRegion({
+  reducer: ee.Reducer.frequencyHistogram(),
+  geometry: spain_limit.geometry(),
+  scale: 500,
+  maxPixels: 1e13
+});
+
+print('Histograma histcombined', histcombined);
+
+// Visualización personalizada
+var visParams = {
+  min: 311,
+  max: 314,
+  palette: ['#1a9850', '#91cf60', '#d9ef8b', '#fee08b'], // Colores personalizados para 311, 312, 313, 314
+};
+
+// Mostrar en el mapa
+
+Map.addLayer(forestType, visParams, 'Land Cover 311–314');
+
+Export.image.toAsset({
+  image: forestType,
+  description: 'tipo_bosque2',
+  assetId: 'tipo_bosque2', // Reemplaza 'tu_usuario' con tu nombre de usuario
+  region: spain_limit, // Define la geometría de la región que deseas exportar
+  crs: 'EPSG:32630',
+  scale: 30, // Escala de exportación (100 m en este caso)
+  maxPixels: 1e13 // Número máximo de píxeles para evitar errores de tamaño
+});
+
+
+
